@@ -16,3 +16,21 @@ __pycache__/
 
 # Streamlit secrets (local only)
 .streamlit/secrets.toml
+
+# User profiles and login data
+users/
+
+# Environment and secrets
+.env
+secrets.toml
+.streamlit/secrets.toml
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
