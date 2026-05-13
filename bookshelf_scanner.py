@@ -1,26 +1,17 @@
-import base64
 import json
 import re
-import requests
-from groq import Groq
-from config import GROQ_API_KEY
+import google.generativeai as genai
+from PIL import Image
+import io
+from config import GEMINI_API_KEY
 
-client = Groq(api_key=GROQ_API_KEY)
-
-
-def _encode_image(image_bytes: bytes) -> str:
-    """Convert image bytes to base64 string for the API."""
-    return base64.b64encode(image_bytes).decode("utf-8")
+genai.configure(api_key=GEMINI_API_KEY)
+vision_client = genai.GenerativeModel("gemini-2.5-flash")
 
 
 def _clean_json_response(text: str) -> str:
-    """
-    Strip markdown code fences if the model wraps
-    its JSON in ```json ... ``` blocks.
-    """
+    """Strip markdown code fences if the model wraps JSON in ``` blocks."""
     text = text.strip()
-
-    # Remove ```json or ``` fences
     text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"```$", "", text)
     return text.strip()
@@ -28,13 +19,14 @@ def _clean_json_response(text: str) -> str:
 
 def scan_bookshelf(image_bytes: bytes) -> list[dict]:
     """
-    Send a bookshelf photo to Groq Vision and extract
+    Send a bookshelf photo to Gemini Vision and extract
     book titles and authors from the spines.
 
     Returns a list of dicts: [{"title": ..., "author": ...}, ...]
     """
 
-    base64_image = _encode_image(image_bytes)
+    # Convert bytes to PIL Image for Gemini
+    image = Image.open(io.BytesIO(image_bytes))
 
     prompt = """
     You are a book spine reader. Carefully examine this bookshelf photo.
@@ -57,30 +49,15 @@ def scan_bookshelf(image_bytes: bytes) -> list[dict]:
     """
 
     try:
-        response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ],
-            max_tokens=1024,
-            temperature=0.1  # low temp = more precise, less creative
+        response = vision_client.generate_content(
+            [prompt, image],
+            generation_config={
+                "temperature": 0.1,
+                "max_output_tokens": 1024
+            }
         )
 
-        raw = response.choices[0].message.content
+        raw = response.text
         cleaned = _clean_json_response(raw)
         books = json.loads(cleaned)
 
@@ -92,7 +69,7 @@ def scan_bookshelf(image_bytes: bytes) -> list[dict]:
                     "title": book.get("title", "Unknown Title").strip(),
                     "author": book.get("author", "Unknown").strip(),
                     "genre": "Unknown",
-                    "summary": f"Scanned from your bookshelf.",
+                    "summary": "Scanned from your bookshelf.",
                     "cover_url": None,
                     "source": "shelf_scan"
                 })
@@ -121,7 +98,6 @@ def render_scanner_ui(username: str):
         "to build your personal library."
     )
 
-    # Tips for best results
     with st.expander("📌 Tips for best results"):
         st.markdown("""
         - 📷 Take the photo straight-on, not at an angle
@@ -153,16 +129,13 @@ def render_scanner_ui(username: str):
             else:
                 st.success(f"Found **{len(found_books)}** books on your shelf!")
 
-                # Show what was found
                 st.markdown("### 📖 Books Detected")
                 for i, book in enumerate(found_books, 1):
                     st.markdown(f"**{i}.** {book['title']} — *{book['author']}*")
 
-                # Save to profile
                 add_owned_books(username, found_books)
                 st.success("✅ Added to your library!")
 
-                # Show full library size
                 all_owned = get_owned_titles(username)
                 st.info(
                     f"📚 Your library now has **{len(all_owned)}** "

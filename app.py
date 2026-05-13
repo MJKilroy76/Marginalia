@@ -257,19 +257,22 @@ def render_main_app(username: str):
         from config import client
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        *[
-                            {"role": m["role"], "content": m["content"]}
-                            for m in st.session_state.messages
-                        ]
-                    ],
-                    max_tokens=512,
-                    temperature=0.7
+                # Build conversation history as a single string for Gemini
+                history = "\n".join([
+                    f"{'User' if m['role'] == 'user' else 'Marginalia'}: {m['content']}"
+                    for m in st.session_state.messages
+                ])
+
+                full_prompt = f"{system_prompt}\n\n## Conversation so far:\n{history}"
+
+                response = client.generate_content(
+                    full_prompt,
+                    generation_config={
+                        "temperature": 0.7,
+                        "max_output_tokens": 512
+                    }
                 )
-                reply = response.choices[0].message.content
+                reply = response.text
                 st.markdown(reply)
 
         st.session_state.messages.append({
