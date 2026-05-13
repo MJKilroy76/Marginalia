@@ -1,0 +1,18 @@
+
+# Environment variables - keep API keys private
+.env
+
+# Virtual environment - no need to upload
+venv/
+.venv/
+
+# PyCharm settings
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Streamlit secrets (local only)
+.streamlit/secrets.toml
