@@ -1,241 +1,441 @@
 import streamlit as st
-import json
+from auth import render_auth_page, render_sidebar
+from profile_manager import (
+    load_profile,
+    update_taste_profile,
+    get_taste_profile,
+    get_owned_titles,
+    add_to_reading_list
+)
+from bookshelf_scanner import render_scanner_ui
 from profiler import build_taste_profile
 from recommender import get_recommendations
 from book_pool import get_books_for_profile
 
-# ── Page Config ──────────────────────────────────────────────
+# ── Page Config ──────────────────────────────────────────────────
 st.set_page_config(
     page_title="Marginalia",
     page_icon="📚",
-    layout="wide"
+    layout="centered"
 )
 
-# ── Custom CSS ────────────────────────────────────────────────
-st.markdown("""
-<style>
-    .main-title {
-        font-size: 2.8rem;
-        font-weight: 700;
-        color: #2C3E50;
-        margin-bottom: 0;
-    }
-    .subtitle {
-        font-size: 1.1rem;
-        color: #7F8C8D;
-        margin-top: 0;
-    }
-    .book-card {
-        background: #f9f9f9;
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 12px;
-        border-left: 4px solid #3498DB;
-    }
-    .poor-match-card {
-        background: #fff5f5;
-        border-radius: 12px;
-        padding: 12px;
-        margin-bottom: 8px;
-        border-left: 4px solid #E74C3C;
-    }
-    .confidence-badge {
-        background: #3498DB;
-        color: white;
-        border-radius: 20px;
-        padding: 2px 10px;
-        font-size: 0.85rem;
-        font-weight: 600;
-    }
-    .profile-box {
-        background: #EBF5FB;
-        border-radius: 10px;
-        padding: 16px;
-        font-size: 0.9rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ── Session State Defaults ───────────────────────────────────────
+if "username" not in st.session_state:
+    st.session_state.username = None
 
-# ── Session State Init ────────────────────────────────────────
+if "page" not in st.session_state:
+    st.session_state.page = "auth"
+
 if "taste_profile" not in st.session_state:
     st.session_state.taste_profile = None
+
 if "recommendations" not in st.session_state:
-    st.session_state.recommendations = None
-if "book_pool" not in st.session_state:
-    st.session_state.book_pool = None
-if "feedback_given" not in st.session_state:
-    st.session_state.feedback_given = {}
+    st.session_state.recommendations = []
 
-# ── Header ────────────────────────────────────────────────────
-st.markdown('<p class="main-title">📚 Marginalia</p>', unsafe_allow_html=True)
-st.markdown(
-    '<p class="subtitle">Your AI-powered personal book recommender</p>',
-    unsafe_allow_html=True
-)
-st.divider()
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# ── Step 1: User Input ────────────────────────────────────────
-st.subheader("🗣️ Tell me about your reading taste")
-st.caption(
-    "Mention books you loved, genres you hate, "
-    "themes you enjoy — anything helps."
-)
 
-user_input = st.text_area(
-    label="Your reading preferences",
-    placeholder=(
-        "e.g. I loved Dune and 1984. I hate romance novels. "
-        "I enjoy fast-paced sci-fi with political themes and complex worlds."
-    ),
-    height=120,
-    label_visibility="collapsed"
-)
+# ── Router ───────────────────────────────────────────────────────
+def route():
+    username = st.session_state.username
 
-col1, col2 = st.columns([1, 4])
-with col1:
-    run_button = st.button(
-        "🔍 Find My Books",
-        type="primary",
-        use_container_width=True
-    )
+    # Not logged in → show auth page
+    if not username:
+        st.session_state.page = "auth"
 
-# ── Step 2: Run Pipeline ──────────────────────────────────────
-if run_button:
-    if not user_input.strip():
-        st.warning("Please tell me a bit about your reading taste first!")
-    else:
-        try:
-            st.session_state.feedback_given = {}
+    page = st.session_state.page
 
-            st.info("🧠 Building your taste profile...")
-            st.session_state.taste_profile = build_taste_profile(user_input)
-            st.success("✅ Taste profile ready!")
+    if page == "auth":
+        render_auth_page()
 
-            st.info("📚 Searching for matching books...")
-            st.session_state.book_pool = get_books_for_profile(
-                st.session_state.taste_profile
-            )
-            st.success("✅ Books found!")
+    elif page == "profile_setup":
+        render_profile_setup(username)
 
-            st.info("🤖 Generating recommendations...")
-            st.session_state.recommendations = get_recommendations(
-                st.session_state.taste_profile,
-                st.session_state.book_pool
-            )
-            st.success("✅ Done! Scroll down to see your recommendations.")
+    elif page == "main":
+        render_main_app(username)
 
+    elif page == "scanner":
+        render_sidebar(username)
+        render_scanner_ui(username)
+        st.markdown("---")
+        if st.button("⬅️ Back to recommendations"):
+            st.session_state.page = "main"
             st.rerun()
 
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "quota" in error_msg.lower():
-                st.error(
-                    "⚠️ API quota exceeded. You've hit the free tier limit. "
-                    "Please wait a few hours for it to reset, or use a new API key."
-                )
-            else:
-                st.error(f"Something went wrong: {error_msg}")
+    elif page == "recommendations":
+        render_sidebar(username)
+        render_recommendations_page(username)
 
-# ── Step 3: Display Results ───────────────────────────────────
-if st.session_state.recommendations:
-    st.divider()
+    elif page == "library":
+        render_sidebar(username)
+        render_library_page(username)
 
-    rec_col, profile_col = st.columns([2, 1])
 
-    with rec_col:
-        st.subheader("📖 Your Recommendations")
+# ── Profile Setup ────────────────────────────────────────────────
+def render_profile_setup(username: str):
+    render_sidebar(username)
 
-        recs = st.session_state.recommendations.get("recommendations", [])
+    profile = load_profile(username)
+    existing_taste = profile.get("taste_profile", {})
+    already_set_up = bool(existing_taste.get("favorite_genres"))
 
-        for i, book in enumerate(recs):
-            cover_url = next(
-                (
-                    b.get("cover_url")
-                    for b in (st.session_state.book_pool or [])
-                    if b["title"].lower() == book["title"].lower()
-                ),
-                None
-            )
+    st.markdown(f"## 👋 Welcome, {username.capitalize()}!")
 
-            with st.container():
-                img_col, text_col = st.columns([1, 4])
-
-                with img_col:
-                    if cover_url:
-                        st.image(cover_url, width=80)
-                    else:
-                        st.markdown("📗")
-
-                with text_col:
-                    st.markdown(
-                        f'<div class="book-card">'
-                        f'<strong>#{i+1} — {book["title"]}</strong> '
-                        f'<em>by {book["author"]}</em><br>'
-                        f'<span class="confidence-badge">'
-                        f'⭐ {book["confidence"]}/10</span><br><br>'
-                        f'{book["reason"]}'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    fb_key = f"feedback_{i}"
-                    if fb_key not in st.session_state.feedback_given:
-                        fb1, fb2, fb3, _ = st.columns([1, 1, 1, 3])
-                        with fb1:
-                            if st.button("👍 Yes", key=f"yes_{i}"):
-                                st.session_state.feedback_given[fb_key] = "yes"
-                                st.rerun()
-                        with fb2:
-                            if st.button("🤔 Maybe", key=f"maybe_{i}"):
-                                st.session_state.feedback_given[fb_key] = "maybe"
-                                st.rerun()
-                        with fb3:
-                            if st.button("👎 No", key=f"no_{i}"):
-                                st.session_state.feedback_given[fb_key] = "no"
-                                st.rerun()
-                    else:
-                        feedback = st.session_state.feedback_given[fb_key]
-                        emoji = {
-                            "yes": "👍 Noted!",
-                            "maybe": "🤔 Maybe!",
-                            "no": "👎 Got it!"
-                        }
-                        st.caption(emoji.get(feedback, ""))
-
-        poor = st.session_state.recommendations.get("poor_matches", [])
-        if poor:
-            with st.expander("❌ Poor Matches (based on your taste)"):
-                for book in poor:
-                    st.markdown(
-                        f'<div class="poor-match-card">'
-                        f'<strong>{book["title"]}</strong><br>'
-                        f'<small>{book["reason"]}</small>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-    with profile_col:
-        st.subheader("🧠 Your Taste Profile")
-        profile = st.session_state.taste_profile
-
+    if already_set_up:
         st.markdown(
-            f'<div class="profile-box">'
-            f'<b>Favorite Genres:</b> '
-            f'{", ".join(profile.get("favorite_genres", []) or ["None detected"])}'
-            f'<br><br>'
-            f'<b>Disliked Genres:</b> '
-            f'{", ".join(profile.get("disliked_genres", []) or ["None detected"])}'
-            f'<br><br>'
-            f'<b>Preferred Themes:</b> '
-            f'{", ".join(profile.get("preferred_themes", []) or ["None detected"])}'
-            f'<br><br>'
-            f'<b>Pacing:</b> '
-            f'{profile.get("pacing_preference", "mixed").capitalize()}<br><br>'
-            f'<b>Mood:</b> {profile.get("mood", "mixed").capitalize()}<br><br>'
-            f'<b>Liked Books:</b> '
-            f'{", ".join(profile.get("liked_books", []) or ["None mentioned"])}'
-            f'<br><br>'
-            f'<b>Notes:</b> {profile.get("notes", "")}'
-            f'</div>',
-            unsafe_allow_html=True
+            "Your taste profile is already set up. "
+            "You can update it below or jump straight in."
         )
+        if st.button("📚 Go to My Dashboard", use_container_width=True):
+            st.session_state.page = "main"
+            st.rerun()
+        st.markdown("---")
+        st.markdown("### 🔄 Update Your Taste Profile")
+    else:
+        st.markdown(
+            "Let's figure out what kinds of books you love "
+            "so I can give you great recommendations."
+        )
+
+    # ── Taste Profile Form ───────────────────────────────────────
+    genre_options = [
+        "Science Fiction", "Fantasy", "Historical Fiction",
+        "Literary Fiction", "Thriller", "Mystery", "Horror",
+        "Romance", "Non-Fiction", "Biography", "Self-Help",
+        "Psychology", "Philosophy", "Politics", "Classics"
+    ]
+    theme_options = [
+        "Adventure", "Coming of Age", "Identity", "War",
+        "Dystopia", "Love", "Survival", "Politics", "Magic",
+        "Technology", "Family", "Friendship", "Redemption",
+        "Power", "Nature", "Justice"
+    ]
+
+    selected_genres = st.multiselect(
+        "What genres do you love?",
+        genre_options,
+        default=existing_taste.get("favorite_genres", [])
+    )
+    selected_themes = st.multiselect(
+        "What themes resonate with you?",
+        theme_options,
+        default=existing_taste.get("preferred_themes", [])
+    )
+    liked_books_input = st.text_input(
+        "Books you've loved (comma separated)",
+        value=", ".join(existing_taste.get("liked_books", [])),
+        placeholder="e.g. Dune, The Alchemist, 1984"
+    )
+    disliked_genres = st.multiselect(
+        "Any genres you'd rather avoid?",
+        genre_options,
+        default=existing_taste.get("disliked_genres", [])
+    )
+    favorite_authors_input = st.text_input(
+        "Favorite authors (comma separated)",
+        value=", ".join(existing_taste.get("favorite_authors", [])),
+        placeholder="e.g. Frank Herbert, Ursula K. Le Guin"
+    )
+
+    if st.button("✅ Save & Continue", use_container_width=True):
+        if not selected_genres:
+            st.error("Please select at least one genre.")
+        else:
+            taste_profile = {
+                "favorite_genres": selected_genres,
+                "preferred_themes": selected_themes,
+                "liked_books": [
+                    b.strip()
+                    for b in liked_books_input.split(",")
+                    if b.strip()
+                ],
+                "disliked_genres": disliked_genres,
+                "favorite_authors": [
+                    a.strip()
+                    for a in favorite_authors_input.split(",")
+                    if a.strip()
+                ]
+            }
+            update_taste_profile(username, taste_profile)
+            st.session_state.taste_profile = taste_profile
+            st.success("Taste profile saved!")
+            st.session_state.page = "main"
+            st.rerun()
+
+
+# ── Main Dashboard ───────────────────────────────────────────────
+def render_main_app(username: str):
+    render_sidebar(username)
+
+    st.markdown(f"## 📚 Hey, {username.capitalize()}!")
+
+    profile = load_profile(username)
+    owned_books = profile.get("owned_books", [])
+    reading_list = profile.get("reading_list", [])
+    read_books = profile.get("read_books", [])
+
+    # ── Stats Row ────────────────────────────────────────────────
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📖 On Your Shelf", len(owned_books))
+    col2.metric("🔖 Reading List", len(reading_list))
+    col3.metric("✅ Read", len(read_books))
+
+    st.markdown("---")
+
+    # ── Navigation ───────────────────────────────────────────────
+    st.markdown("### What would you like to do?")
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        if st.button(
+            "🤖 Get Recommendations",
+            use_container_width=True
+        ):
+            st.session_state.page = "recommendations"
+            st.rerun()
+
+    with col_b:
+        if st.button(
+            "📸 Scan My Bookshelf",
+            use_container_width=True
+        ):
+            st.session_state.page = "scanner"
+            st.rerun()
+
+    with col_c:
+        if st.button(
+            "🗂️ My Library",
+            use_container_width=True
+        ):
+            st.session_state.page = "library"
+            st.rerun()
+
+    # ── Quick Chat ───────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 💬 Ask Marginalia Anything")
+    st.caption("Ask about books, authors, genres, or get a quick suggestion.")
+
+    # Display chat history
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("What are you in the mood for?"):
+        st.session_state.messages.append({
+            "role": "user",
+            "content": prompt
+        })
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        taste = get_taste_profile(username)
+        owned = get_owned_titles(username)
+
+        system_prompt = f"""
+        You are Marginalia, a warm and knowledgeable AI reading companion.
+        You help readers discover books they'll love.
+
+        User's taste profile:
+        - Favorite genres: {taste.get('favorite_genres', [])}
+        - Preferred themes: {taste.get('preferred_themes', [])}
+        - Books they've loved: {taste.get('liked_books', [])}
+        - Genres to avoid: {taste.get('disliked_genres', [])}
+        - Favorite authors: {taste.get('favorite_authors', [])}
+
+        Books they already own: {owned[:20] if owned else 'None scanned yet'}
+
+        Guidelines:
+        - Be conversational, warm, and enthusiastic about books
+        - Give specific recommendations with brief reasons why
+        - If they own a book already, acknowledge it
+        - Never recommend books in their disliked genres
+        - Keep responses concise but helpful
+        """
+
+        from config import client
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        *[
+                            {"role": m["role"], "content": m["content"]}
+                            for m in st.session_state.messages
+                        ]
+                    ],
+                    max_tokens=512,
+                    temperature=0.7
+                )
+                reply = response.choices[0].message.content
+                st.markdown(reply)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": reply
+        })
+
+
+# ── Recommendations Page ─────────────────────────────────────────
+def render_recommendations_page(username: str):
+    st.markdown("## 🤖 Your Recommendations")
+
+    profile = load_profile(username)
+    taste = profile.get("taste_profile", {})
+    owned_books = profile.get("owned_books", [])
+    owned_titles = {b["title"].lower() for b in owned_books}
+
+    # Source toggle
+    source = st.radio(
+        "Recommend from:",
+        ["🌐 General pool", "📚 My bookshelf"],
+        horizontal=True
+    )
+
+    if st.button("🔄 Generate Recommendations", use_container_width=True):
+        with st.spinner("Finding your next great read..."):
+
+            if source == "📚 My bookshelf":
+                if not owned_books:
+                    st.warning(
+                        "Your shelf is empty! "
+                        "Scan your bookshelf first so I know what you own."
+                    )
+                    if st.button("📸 Scan My Bookshelf"):
+                        st.session_state.page = "scanner"
+                        st.rerun()
+                    return
+
+                # Recommend FROM owned books based on taste
+                book_pool = owned_books
+                result = get_recommendations(taste, book_pool)
+                recs = result.get("recommendations", [])
+
+                # Merge back the full book data (cover_url, genre, summary) from the pool
+                pool_lookup = {b["title"].lower(): b for b in book_pool}
+                for rec in recs:
+                    match = pool_lookup.get(rec["title"].lower(), {})
+                    rec["genre"] = match.get("genre", "Unknown")
+                    rec["summary"] = rec.get("reason", match.get("summary", ""))
+                    rec["cover_url"] = match.get("cover_url", None)
+
+                st.session_state.recommendations = recs
+            else:
+
+                # General pool — filter out owned books
+                book_pool = get_books_for_profile(taste, limit=20)
+                book_pool = [
+                    b for b in book_pool
+                    if b["title"].lower() not in owned_titles
+                ]
+                result = get_recommendations(taste, book_pool)
+                recs = result.get("recommendations", [])
+
+                # Merge back the full book data (cover_url, genre, summary) from the pool
+                pool_lookup = {b["title"].lower(): b for b in book_pool}
+                for rec in recs:
+                    match = pool_lookup.get(rec["title"].lower(), {})
+                    rec["genre"] = match.get("genre", "Unknown")
+                    rec["summary"] = rec.get("reason", match.get("summary", ""))
+                    rec["cover_url"] = match.get("cover_url", None)
+
+                st.session_state.recommendations = recs
+
+    # Display recommendations
+    if st.session_state.recommendations:
+        st.markdown("---")
+        for i, book in enumerate(st.session_state.recommendations, 1):
+            with st.container():
+                col1, col2 = st.columns([1, 4])
+
+                with col1:
+                    if book.get("cover_url"):
+                        st.image(
+                            book["cover_url"],
+                            width=80
+                        )
+                    else:
+                        st.markdown("📖")
+
+                with col2:
+                    st.markdown(f"### {i}. {book['title']}")
+                    st.markdown(f"*by {book['author']}*")
+                    st.markdown(f"**Genre:** {book['genre']}")
+                    st.markdown(book['summary'])
+
+                    if st.button(
+                        "🔖 Save to Reading List",
+                        key=f"save_{i}"
+                    ):
+                        add_to_reading_list(username, book)
+                        st.success(f"Added *{book['title']}* to your reading list!")
+
+                st.markdown("---")
+
+    if st.button("⬅️ Back to Dashboard", use_container_width=True):
+        st.session_state.page = "main"
+        st.rerun()
+
+
+# ── Library Page ─────────────────────────────────────────────────
+def render_library_page(username: str):
+    st.markdown("## 🗂️ My Library")
+
+    profile = load_profile(username)
+
+    tab1, tab2, tab3 = st.tabs([
+        "📚 My Shelf",
+        "🔖 Reading List",
+        "✅ Read"
+    ])
+
+    # ── Owned Books ──────────────────────────────────────────────
+    with tab1:
+        owned = profile.get("owned_books", [])
+        if not owned:
+            st.info("No books scanned yet. Use the bookshelf scanner to add books!")
+            if st.button("📸 Scan My Bookshelf"):
+                st.session_state.page = "scanner"
+                st.rerun()
+        else:
+            st.markdown(f"**{len(owned)} books on your shelf:**")
+            for book in owned:
+                st.markdown(f"- **{book['title']}** — *{book['author']}*")
+
+    # ── Reading List ─────────────────────────────────────────────
+    with tab2:
+        reading_list = profile.get("reading_list", [])
+        if not reading_list:
+            st.info("Nothing saved yet. Get recommendations and save ones you like!")
+        else:
+            st.markdown(f"**{len(reading_list)} books saved:**")
+            for book in reading_list:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown(f"- **{book['title']}** — *{book['author']}*")
+                with col2:
+                    if st.button("✅ Mark Read", key=f"read_{book['title']}"):
+                        from profile_manager import mark_as_read
+                        mark_as_read(username, book["title"])
+                        st.rerun()
+
+    # ── Read Books ───────────────────────────────────────────────
+    with tab3:
+        read = profile.get("read_books", [])
+        if not read:
+            st.info("No books marked as read yet.")
+        else:
+            st.markdown(f"**{len(read)} books read:**")
+            for book in read:
+                st.markdown(f"- **{book['title']}** — *{book['author']}*")
+
+    st.markdown("---")
+    if st.button("⬅️ Back to Dashboard", use_container_width=True):
+        st.session_state.page = "main"
+        st.rerun()
+
+
+# ── Run ──────────────────────────────────────────────────────────
+route()

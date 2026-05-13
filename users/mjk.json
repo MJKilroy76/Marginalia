@@ -1,0 +1,51 @@
+{
+  "username": "mjk",
+  "password_hash": "01c6243f4c0847028f046c96b2f99d9393982f3dfdcc62bfedbea9c86ebd8965",
+  "taste_profile": {
+    "favorite_genres": [
+      "Science Fiction",
+      "Fantasy",
+      "Historical Fiction",
+      "Non-Fiction",
+      "Biography",
+      "Politics",
+      "Romance"
+    ],
+    "preferred_themes": [
+      "Adventure",
+      "War",
+      "Identity",
+      "Dystopia",
+      "Love",
+      "Politics",
+      "Magic",
+      "Technology",
+      "Family",
+      "Friendship",
+      "Redemption",
+      "Power",
+      "Justice",
+      "Survival"
+    ],
+    "liked_books": [
+      "The Martian",
+      "Project Hail Mary",
+      "1984",
+      "The Giver",
+      "Harry Potter and the Philosopher's Stone"
+    ],
+    "disliked_genres": [
+      "Horror",
+      "Philosophy",
+      "Classics",
+      "Non-Fiction"
+    ],
+    "favorite_authors": [
+      "Andy Weir",
+      "Lee Child"
+    ]
+  },
+  "owned_books": [],
+  "read_books": [],
+  "reading_list": []
+}
