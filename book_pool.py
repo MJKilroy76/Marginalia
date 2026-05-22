@@ -9,7 +9,7 @@ OPENLIBRARY_COVERS = "https://covers.openlibrary.org/b/id/{cover_id}-M.jpg"
 def _fetch_cover_by_title(title: str, author: str) -> str | None:
     """
     Fallback cover fetcher — looks up a book by title+author
-    and returns a cover URL if found.
+    and returns a cover URL if found. Never raises.
     """
     try:
         params = {
@@ -21,7 +21,7 @@ def _fetch_cover_by_title(title: str, author: str) -> str | None:
         response = requests.get(
             OPENLIBRARY_SEARCH,
             params=params,
-            timeout=8
+            timeout=5        # tighter timeout so it fails fast
         )
         response.raise_for_status()
         docs = response.json().get("docs", [])
@@ -29,7 +29,7 @@ def _fetch_cover_by_title(title: str, author: str) -> str | None:
             cover_id = docs[0]["cover_i"]
             return OPENLIBRARY_COVERS.format(cover_id=cover_id)
     except Exception as e:
-        print(f"Cover fetch error for '{title}': {e}")
+        print(f"Cover fetch failed silently for '{title}': {e}")
     return None
 
 
