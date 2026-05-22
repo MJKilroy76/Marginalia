@@ -1,12 +1,15 @@
 import json
 import re
-import google.generativeai as genai
-from PIL import Image
-import io
-from config import GEMINI_API_KEY
+import base64
+from groq import Groq
+from config import GROQ_API_KEY
 
-genai.configure(api_key=GEMINI_API_KEY)
-vision_client = genai.GenerativeModel("gemini-2.5-flash")
+client = Groq(api_key=GROQ_API_KEY)
+
+
+def _encode_image(image_bytes: bytes) -> str:
+    """Convert image bytes to base64 string for the API."""
+    return base64.b64encode(image_bytes).decode("utf-8")
 
 
 def _clean_json_response(text: str) -> str:
@@ -19,14 +22,13 @@ def _clean_json_response(text: str) -> str:
 
 def scan_bookshelf(image_bytes: bytes) -> list[dict]:
     """
-    Send a bookshelf photo to Gemini Vision and extract
+    Send a bookshelf photo to Groq Vision and extract
     book titles and authors from the spines.
 
     Returns a list of dicts: [{"title": ..., "author": ...}, ...]
     """
 
-    # Convert bytes to PIL Image for Gemini
-    image = Image.open(io.BytesIO(image_bytes))
+    base64_image = _encode_image(image_bytes)
 
     prompt = """
     You are a book spine reader. Carefully examine this bookshelf photo.
@@ -49,15 +51,30 @@ def scan_bookshelf(image_bytes: bytes) -> list[dict]:
     """
 
     try:
-        response = vision_client.generate_content(
-            [prompt, image],
-            generation_config={
-                "temperature": 0.1,
-                "max_output_tokens": 1024
-            }
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1024,
+            temperature=0.1
         )
 
-        raw = response.text
+        raw = response.choices[0].message.content
         cleaned = _clean_json_response(raw)
         books = json.loads(cleaned)
 
