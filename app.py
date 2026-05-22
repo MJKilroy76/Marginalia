@@ -332,15 +332,24 @@ Guidelines:
 def render_recommendations_page(username: str):
     st.markdown("## 🤖 Your Recommendations")
 
-    # Help button
     render_scoring_help()
 
     profile = load_profile(username)
     taste = profile.get("taste_profile", {})
     owned_books = profile.get("owned_books", [])
-    owned_titles = {b["title"].lower() for b in owned_books}
     ratings = profile.get("ratings", {})
+    dnf_books = profile.get("dnf_books", [])
     age = profile.get("age")
+
+    # ── Build exclusion set ──────────────────────────────────────
+
+    # Exclude: owned, read, saved to reading list, DNF books
+    read_titles = {b["title"].lower() for b in profile.get("read_books", [])}
+    dnf_titles = {b["title"].lower() for b in dnf_books}
+    saved_titles = {b["title"].lower() for b in profile.get("reading_list", [])}
+    owned_titles = {b["title"].lower() for b in owned_books}
+
+    excluded_titles = read_titles | dnf_titles | saved_titles
 
     # ── Optional filters ─────────────────────────────────────────
     with st.expander("🎛️ Filters *(optional)*"):
@@ -374,10 +383,30 @@ def render_recommendations_page(username: str):
                 if not owned_books:
                     st.warning("Your shelf is empty! Scan your bookshelf first.")
                     return
-                book_pool = owned_books
+
+                # From shelf: exclude read, DNF, and saved — but keep owned
+                book_pool = [
+                    b for b in owned_books
+                    if b["title"].lower() not in excluded_titles
+                ]
+                if not book_pool:
+                    st.info(
+                        "You've already read, saved, or DNF'd everything on "
+                        "your shelf! Scan more books to get new recommendations."
+                    )
+                    return
             else:
-                book_pool = get_books_for_profile(taste, limit=20)
-                book_pool = [b for b in book_pool if b["title"].lower() not in owned_titles]
+
+                # General pool: exclude owned, read, DNF, and saved
+                all_excluded = excluded_titles | owned_titles
+                book_pool = get_books_for_profile(taste, limit=40)
+                book_pool = [
+                    b for b in book_pool
+                    if b["title"].lower() not in all_excluded
+                ]
+                if not book_pool:
+                    st.info("No new books to recommend right now. Try updating your taste profile!")
+                    return
 
             result = get_recommendations(
                 taste_profile=taste,
@@ -386,6 +415,7 @@ def render_recommendations_page(username: str):
                 reading_pace=reading_pace,
                 current_mood=current_mood,
                 ratings=ratings,
+                dnf_books=dnf_books,
                 surprise=surprise
             )
             recs = result.get("recommendations", [])
@@ -397,6 +427,7 @@ def render_recommendations_page(username: str):
                 rec["summary"] = rec.get("reason", match.get("summary", ""))
                 rec["cover_url"] = match.get("cover_url", None)
 
+            # Always replace — never append — so every generation is fresh
             st.session_state.recommendations = recs
 
     # ── Display Recommendations ──────────────────────────────────
@@ -413,8 +444,6 @@ def render_recommendations_page(username: str):
                         st.markdown("📖")
 
                 with col2:
-
-                    # Title + badges
                     title_line = f"### {i}. {book['title']}"
                     if book.get("surprise"):
                         title_line += " 🎲"
@@ -422,7 +451,6 @@ def render_recommendations_page(username: str):
                     st.markdown(f"*by {book['author']}*")
                     st.markdown(f"**Genre:** {book['genre']}")
 
-                    # Series info
                     if book.get("is_series"):
                         series_note = f"📚 Part of *{book.get('series_name', 'a series')}*"
                         if book.get("series_position"):
@@ -431,16 +459,13 @@ def render_recommendations_page(username: str):
 
                     st.markdown(book["summary"])
 
-                    # Score display
                     score = book.get("final_score")
                     if score is not None:
                         st.markdown(f"**Match Score: {score}/10**")
                         st.progress(score / 10)
-
-                        # Score breakdown
                         with st.expander("📊 Score breakdown"):
                             breakdown = book.get("score_breakdown", {})
-                            has_history = bool(profile.get("ratings"))
+                            has_history = bool(ratings)
                             criteria = (
                                 SCORING_CRITERIA["returning_user"]
                                 if has_history
@@ -453,7 +478,6 @@ def render_recommendations_page(username: str):
                                     f"({int(meta['weight']*100)}%): {raw}/10"
                                 )
 
-                    # Action buttons
                     btn_col1, btn_col2, btn_col3 = st.columns(3)
                     with btn_col1:
                         if st.button("🔖 Save", key=f"save_{i}"):
@@ -462,7 +486,7 @@ def render_recommendations_page(username: str):
                     with btn_col2:
                         if st.button("📖 Reading now", key=f"reading_{i}"):
                             set_currently_reading(username, book)
-                            st.success(f"Set as currently reading!")
+                            st.success("Set as currently reading!")
                     with btn_col3:
                         rating = st.selectbox(
                             "Rate",
