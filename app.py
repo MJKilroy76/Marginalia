@@ -343,13 +343,16 @@ def render_recommendations_page(username: str):
 
     # ── Build exclusion set ──────────────────────────────────────
 
-    # Exclude: owned, read, saved to reading list, DNF books
+    # Exclude: owned, read, saved, DNF, and liked books from taste profile
     read_titles = {b["title"].lower() for b in profile.get("read_books", [])}
     dnf_titles = {b["title"].lower() for b in dnf_books}
     saved_titles = {b["title"].lower() for b in profile.get("reading_list", [])}
     owned_titles = {b["title"].lower() for b in owned_books}
+    liked_titles = {
+        t.lower() for t in taste.get("liked_books", [])
+    }
 
-    excluded_titles = read_titles | dnf_titles | saved_titles
+    excluded_titles = read_titles | dnf_titles | saved_titles | liked_titles
 
     # ── Optional filters ─────────────────────────────────────────
     with st.expander("🎛️ Filters *(optional)*"):
