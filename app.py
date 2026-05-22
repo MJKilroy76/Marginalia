@@ -428,7 +428,9 @@ def render_recommendations_page(username: str):
                 match = pool_lookup.get(rec["title"].lower(), {})
                 rec["genre"] = match.get("genre", "Unknown")
                 rec["summary"] = rec.get("reason", match.get("summary", ""))
-                rec["cover_url"] = match.get("cover_url", None)
+                rec["cover_url"] = match.get("cover_url") or _fetch_cover_by_title(
+                    rec["title"], rec["author"]
+                )
 
             # Always replace — never append — so every generation is fresh
             st.session_state.recommendations = recs
