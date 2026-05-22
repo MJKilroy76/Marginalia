@@ -62,15 +62,14 @@ Format:
 }}
 """
 
-    response = client.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.5,
-            max_output_tokens=1024
-        )
+    response = client.chat.completions.create(
+        model="llama3-8b-8192",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5,
+        max_tokens=1024
     )
 
-    raw = response.text.strip()
+    raw = response.choices[0].message.content.strip()
     cleaned = _clean_json(raw)
 
     try:
