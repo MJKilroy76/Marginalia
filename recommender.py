@@ -64,10 +64,10 @@ Format:
 
     response = client.generate_content(
         prompt,
-        generation_config={
-            "temperature": 0.5,
-            "max_output_tokens": 1024
-        }
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.5,
+            max_output_tokens=1024
+        )
     )
 
     raw = response.text.strip()
