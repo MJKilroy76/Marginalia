@@ -11,7 +11,7 @@ def _clean_json(text: str) -> str:
     return text.strip()
 
 
-# ── Scoring Criteria (exported for help button) ──────────────────
+# ── Default Scoring Criteria ─────────────────────────────────────
 SCORING_CRITERIA = {
     "new_user": {
         "genre_match":         {"weight": 0.35, "description": "How well the book's genre matches your preferred genres"},
@@ -35,15 +35,23 @@ def _compute_score(
     reading_pace: str | None,
     current_mood: str | None,
     ratings: dict,
-    ai_scores: dict
+    ai_scores: dict,
+    custom_weights: dict | None = None   # ← Iteration 3
 ) -> float:
     has_history = bool(ratings)
     criteria = SCORING_CRITERIA["returning_user"] if has_history else SCORING_CRITERIA["new_user"]
+
+    # Use custom weights if provided, otherwise fall back to defaults
+    weights = custom_weights if custom_weights else {
+        k: v["weight"] for k, v in criteria.items()
+    }
+
     total = 0.0
-    for key, meta in criteria.items():
+    for key in criteria:
         raw = ai_scores.get(key, 5.0)
         normalized = max(0.0, min(10.0, float(raw))) / 10.0
-        total += normalized * meta["weight"]
+        total += normalized * weights.get(key, 0.0)
+
     return round(total * 10, 2)
 
 
@@ -55,14 +63,24 @@ def get_recommendations(
     current_mood: str | None = None,
     ratings: dict | None = None,
     dnf_books: list | None = None,
-    surprise: bool = False
+    surprise: bool = False,
+    custom_weights: dict | None = None    # ← Iteration 3
 ) -> dict:
 
     ratings = ratings or {}
     dnf_books = dnf_books or []
     has_history = bool(ratings)
 
-    # ── Shuffle for fresh results every generation ───────────────
+    # Resolve weights for prompt display
+    if custom_weights:
+        w = custom_weights
+    else:
+        criteria = SCORING_CRITERIA["returning_user"] if has_history else SCORING_CRITERIA["new_user"]
+        w = {k: v["weight"] for k, v in criteria.items()}
+
+    def pct(key):
+        return int(round(w.get(key, 0) * 100))
+
     pool = book_pool.copy()
     random.shuffle(pool)
 
@@ -73,7 +91,6 @@ def get_recommendations(
 
     profile_str = json.dumps(taste_profile, indent=2)
 
-    # Build a rich ratings context string
     if ratings:
         ratings_lines = []
         for title, score in ratings.items():
@@ -83,7 +100,6 @@ def get_recommendations(
     else:
         ratings_str = "None yet"
 
-    # Build DNF context
     dnf_str = (
         "\n".join([f"  - {b['title']} by {b['author']}" for b in dnf_books])
         if dnf_books else "None"
@@ -97,7 +113,8 @@ def get_recommendations(
     )
 
     phase_note = (
-        "The user has rated books before — use those ratings heavily (30% weight) "
+        "The user has rated books before — use those ratings heavily "
+        f"({pct('historical_ratings')}% weight) "
         "to infer what they like and dislike. Books rated 4-5 stars indicate strong "
         "preferences; books rated 1-2 stars indicate things to avoid."
         if has_history else
@@ -108,23 +125,21 @@ def get_recommendations(
 You are a rigorous book recommendation engine using a weighted scoring system.
 
 ## Scoring Criteria (score each 0-10):
-- genre_match ({"25" if has_history else "35"}%): Genre overlap with user preferences
-- age_appropriateness ({"15" if has_history else "25"}%): Maturity fit for age {age if age else "unspecified"}
-- mood_match ({"15" if has_history else "20"}%): Tone fit for mood "{current_mood if current_mood else "unspecified"}"
-- reading_pace_fit ({"15" if has_history else "20"}%): Length fit for "{reading_pace if reading_pace else "unspecified"}" reading pace
-{"- historical_ratings (30%): Inferred from the user's past star ratings" if has_history else ""}
+- genre_match ({pct('genre_match')}%): Genre overlap with user preferences
+- age_appropriateness ({pct('age_appropriateness')}%): Maturity fit for age {age if age else "unspecified"}
+- mood_match ({pct('mood_match')}%): Tone fit for mood "{current_mood if current_mood else "unspecified"}"
+- reading_pace_fit ({pct('reading_pace_fit')}%): Length fit for "{reading_pace if reading_pace else "unspecified"}" reading pace
+{"- historical_ratings (" + str(pct('historical_ratings')) + "%): Inferred from the user's past star ratings" if has_history else ""}
 
 {phase_note}
 
 ## User Taste Profile:
 {profile_str}
 
-## User's Past Ratings (use these to infer preferences and dislikes):
+## User's Past Ratings:
 {ratings_str}
 
-## Books the user did NOT finish (DNF) — treat these as strong negative signals,
-
-## avoid recommending books too similar to these:
+## DNF Books (strong negative signals — avoid similar):
 {dnf_str}
 
 ## User Age: {age if age else "Not specified"}
@@ -133,7 +148,7 @@ You are a rigorous book recommendation engine using a weighted scoring system.
 
 ## Current Mood: {current_mood if current_mood else "Not specified"}
 
-## Available Books (already filtered — all books here are eligible to recommend):
+## Available Books:
 {books_formatted}
 
 ## Instructions:
@@ -180,7 +195,7 @@ Format:
     response = client.chat.completions.create(
         model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,       # slightly higher for variety
+        temperature=0.7,
         max_tokens=2048
     )
 
@@ -201,7 +216,8 @@ Format:
             reading_pace=reading_pace,
             current_mood=current_mood,
             ratings=ratings,
-            ai_scores=rec.get("score_breakdown", {})
+            ai_scores=rec.get("score_breakdown", {}),
+            custom_weights=custom_weights       # ← pass through
         )
 
     return result

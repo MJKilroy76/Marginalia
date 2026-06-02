@@ -1,5 +1,7 @@
 import streamlit as st
 import json
+import plotly.express as px
+import plotly.graph_objects as go
 from auth import render_auth_page, render_sidebar
 from profile_manager import (
     load_profile,
@@ -12,7 +14,14 @@ from profile_manager import (
     rate_book,
     set_currently_reading,
     mark_dnf,
-    set_reading_goal
+    set_reading_goal,
+    save_criterion_weights,
+    get_criterion_weights,
+    reset_criterion_weights,
+    log_recommendation_feedback,
+    get_recommendation_feedback,
+    DEFAULT_WEIGHTS_NEW,
+    DEFAULT_WEIGHTS_RETURNING
 )
 from bookshelf_scanner import render_scanner_ui
 from recommender import get_recommendations, SCORING_CRITERIA
@@ -64,7 +73,9 @@ def route():
     elif page == "library":
         render_sidebar(username)
         render_library_page(username)
-
+    elif page == "analytics":
+        render_sidebar(username)
+        render_analytics_page(username)
 
 # ── Scoring Help Dialog ──────────────────────────────────────────
 def render_scoring_help():
@@ -237,7 +248,7 @@ def render_main_app(username: str):
 
     # ── Navigation ───────────────────────────────────────────────
     st.markdown("### What would you like to do?")
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d = st.columns(4)
 
     with col_a:
         if st.button("🤖 Get Recommendations", use_container_width=True):
@@ -250,6 +261,10 @@ def render_main_app(username: str):
     with col_c:
         if st.button("🗂️ My Library", use_container_width=True):
             st.session_state.page = "library"
+            st.rerun()
+    with col_d:
+        if st.button("📊 My Analytics", use_container_width=True):
+            st.session_state.page = "analytics"
             st.rerun()
 
     # ── Reading Goal Setter ──────────────────────────────────────
@@ -327,6 +342,55 @@ Guidelines:
 
         st.session_state.messages.append({"role": "assistant", "content": reply})
 
+# ── Weight Sliders ───────────────────────────────────────────────
+def render_weight_sliders(username: str, has_history: bool) -> dict:
+    current = get_criterion_weights(username, has_history)
+
+    criteria_labels = {
+        "genre_match":         "🎭 Genre Match",
+        "age_appropriateness": "🔞 Age Appropriateness",
+        "mood_match":          "🌤️ Mood Match",
+        "reading_pace_fit":    "📖 Reading Pace Fit",
+        "historical_ratings":  "⭐ Historical Ratings",
+    }
+
+    keys = list(current.keys())
+    new_weights = {}
+
+    with st.expander("⚙️ Customize scoring weights", expanded=False):
+        for key in keys:
+            label = criteria_labels.get(key, key)
+            val = current.get(key, 0.0)
+            new_weights[key] = st.slider(
+                label,
+                min_value=0.0,
+                max_value=1.0,
+                value=float(val),
+                step=0.05,
+                key=f"weight_{key}"
+            )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 Save weights", key="save_weights"):
+                save_criterion_weights(username, new_weights)
+                st.success("Weights saved!")
+        with col2:
+            if st.button("↺ Reset to defaults", key="reset_weights"):
+                reset_criterion_weights(username)
+                st.info("Reset to defaults.")
+                st.rerun()
+
+        total = sum(new_weights.values()) or 1
+        normalized = {k: round(v / total * 100, 1) for k, v in new_weights.items()}
+        st.markdown("**Live preview (normalized):**")
+        preview_cols = st.columns(len(normalized))
+        for i, (k, v) in enumerate(normalized.items()):
+            preview_cols[i].metric(
+                criteria_labels.get(k, k).split(" ", 1)[-1], f"{v}%"
+            )
+
+    return new_weights
 
 # ── Recommendations Page ─────────────────────────────────────────
 def render_recommendations_page(username: str):
@@ -340,6 +404,12 @@ def render_recommendations_page(username: str):
     ratings = profile.get("ratings", {})
     dnf_books = profile.get("dnf_books", [])
     age = profile.get("age")
+
+    # ── Iteration 3: Weight Sliders ──────────────────────────────
+    has_history = bool(ratings)
+    custom_weights = render_weight_sliders(username, has_history)
+    total_w = sum(custom_weights.values()) or 1
+    normalized_weights = {k: v / total_w for k, v in custom_weights.items()}
 
     # ── Build exclusion set ──────────────────────────────────────
 
@@ -419,7 +489,8 @@ def render_recommendations_page(username: str):
                 current_mood=current_mood,
                 ratings=ratings,
                 dnf_books=dnf_books,
-                surprise=surprise
+                surprise=surprise,
+                custom_weights=normalized_weights  # ← Iteration 3
             )
             recs = result.get("recommendations", [])
 
@@ -493,10 +564,26 @@ def render_recommendations_page(username: str):
                     with btn_col1:
                         if st.button("🔖 Save", key=f"save_{i}"):
                             add_to_reading_list(username, book)
+                            log_recommendation_feedback(
+                                username=username,
+                                book_title=book["title"],
+                                author=book["author"],
+                                outcome="saved",
+                                final_score=book.get("final_score", 0),
+                                score_breakdown=book.get("score_breakdown", {})
+                            )
                             st.success(f"Saved *{book['title']}*!")
                     with btn_col2:
                         if st.button("📖 Reading now", key=f"reading_{i}"):
                             set_currently_reading(username, book)
+                            log_recommendation_feedback(
+                                username=username,
+                                book_title=book["title"],
+                                author=book["author"],
+                                outcome="started",
+                                final_score=book.get("final_score", 0),
+                                score_breakdown=book.get("score_breakdown", {})
+                            )
                             st.success("Set as currently reading!")
                     with btn_col3:
                         rating = st.selectbox(
@@ -505,7 +592,21 @@ def render_recommendations_page(username: str):
                             key=f"rate_{i}"
                         )
                         if rating != "—":
-                            rate_book(username, book["title"], len(rating.replace(" ", "")))
+                            stars = len(rating.replace(" ", ""))
+                            rate_book(username, book["title"], stars)
+                            outcome = (
+                                "rated_high" if stars >= 4
+                                else "rated_low" if stars <= 2
+                                else "rated_mid"
+                            )
+                            log_recommendation_feedback(
+                                username=username,
+                                book_title=book["title"],
+                                author=book["author"],
+                                outcome=outcome,
+                                final_score=book.get("final_score", 0),
+                                score_breakdown=book.get("score_breakdown", {})
+                            )
                             st.success("Rating saved!")
 
                 st.markdown("---")
@@ -610,6 +711,181 @@ def render_library_page(username: str):
                 st.markdown(f"- **{book['title']}** — *{book['author']}*")
 
     st.markdown("---")
+    if st.button("⬅️ Back to Dashboard", use_container_width=True):
+        st.session_state.page = "main"
+        st.rerun()
+
+# ── Analytics Page ───────────────────────────────────────────────
+def render_analytics_page(username: str):
+    profile = load_profile(username)
+    if not profile:
+        return
+
+    st.title("📊 Your Reading Analytics")
+
+    read_books   = profile.get("read_books", [])
+    ratings      = profile.get("ratings", {})
+    dnf_books    = profile.get("dnf_books", [])
+    reading_list = profile.get("reading_list", [])
+    feedback     = get_recommendation_feedback(username)
+    goal         = profile.get("reading_goal", {})
+
+    # ── Summary stats ────────────────────────────────────────────
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("📚 Books Read", len(read_books))
+    col2.metric("⭐ Avg Rating", (
+        f"{sum(ratings.values()) / len(ratings):.1f} / 5"
+        if ratings else "N/A"
+    ))
+    col3.metric("❌ DNF", len(dnf_books))
+    col4.metric("🔖 Reading List", len(reading_list))
+
+    st.divider()
+
+    # ── Reading goal progress ────────────────────────────────────
+    target = goal.get("target", 0)
+    year   = goal.get("year")
+    if target and target > 0:
+        st.markdown(f"### 🎯 {year} Reading Goal")
+        progress = min(len(read_books) / target, 1.0)
+        st.progress(progress)
+        st.caption(
+            f"{len(read_books)} of {target} books "
+            f"({int(progress * 100)}%)"
+        )
+        st.divider()
+
+    # ── Genre breakdown ──────────────────────────────────────────
+    if read_books:
+        st.markdown("### 🎭 Genre Breakdown")
+        genre_counts = {}
+        for book in read_books:
+            genre = book.get("genre", "Unknown")
+            primary = genre.split(",")[0].split("/")[0].strip()
+            genre_counts[primary] = genre_counts.get(primary, 0) + 1
+
+        fig_genre = px.pie(
+            names=list(genre_counts.keys()),
+            values=list(genre_counts.values()),
+            title="Genres you've read",
+            hole=0.4,
+            color_discrete_sequence=px.colors.qualitative.Pastel
+        )
+        fig_genre.update_traces(textposition="inside", textinfo="percent+label")
+        fig_genre.update_layout(showlegend=False, margin=dict(t=40, b=0, l=0, r=0))
+        st.plotly_chart(fig_genre, use_container_width=True)
+
+    # ── Rating distribution ──────────────────────────────────────
+    if ratings:
+        st.markdown("### ⭐ Your Rating Distribution")
+        dist = {i: 0 for i in range(1, 6)}
+        for r in ratings.values():
+            dist[r] = dist.get(r, 0) + 1
+
+        fig_ratings = px.bar(
+            x=[f"{'⭐' * i}" for i in dist.keys()],
+            y=list(dist.values()),
+            labels={"x": "Rating", "y": "Number of Books"},
+            color=list(dist.values()),
+            color_continuous_scale="Teal",
+            title="How you've rated your books"
+        )
+        fig_ratings.update_layout(
+            coloraxis_showscale=False,
+            margin=dict(t=40, b=0, l=0, r=0)
+        )
+        st.plotly_chart(fig_ratings, use_container_width=True)
+
+    # ── Top authors ──────────────────────────────────────────────
+    if read_books:
+        st.markdown("### ✍️ Most Read Authors")
+        author_counts = {}
+        for book in read_books:
+            author = book.get("author", "Unknown")
+            author_counts[author] = author_counts.get(author, 0) + 1
+
+        sorted_authors = sorted(
+            author_counts.items(), key=lambda x: x[1], reverse=True
+        )[:8]
+        if sorted_authors:
+            fig_authors = px.bar(
+                x=[a[1] for a in sorted_authors],
+                y=[a[0] for a in sorted_authors],
+                orientation="h",
+                labels={"x": "Books Read", "y": "Author"},
+                color=[a[1] for a in sorted_authors],
+                color_continuous_scale="Blues",
+                title="Authors you read most"
+            )
+            fig_authors.update_layout(
+                coloraxis_showscale=False,
+                yaxis=dict(autorange="reversed"),
+                margin=dict(t=40, b=0, l=0, r=0)
+            )
+            st.plotly_chart(fig_authors, use_container_width=True)
+
+    # ── Recommendation feedback ──────────────────────────────────
+    if feedback:
+        st.divider()
+        st.markdown("### 🤖 Recommendation Outcomes")
+        outcome_counts = {}
+        for f in feedback:
+            o = f.get("outcome", "unknown")
+            outcome_counts[o] = outcome_counts.get(o, 0) + 1
+
+        outcome_labels = {
+            "saved":      "📖 Saved",
+            "started":    "▶️ Started Reading",
+            "rated_high": "👍 Rated Highly",
+            "rated_low":  "👎 Rated Poorly",
+            "rated_mid":  "😐 Rated Mid",
+            "ignored":    "🙈 Ignored"
+        }
+
+        fig_outcomes = px.bar(
+            x=[outcome_labels.get(k, k) for k in outcome_counts.keys()],
+            y=list(outcome_counts.values()),
+            labels={"x": "Outcome", "y": "Count"},
+            color=list(outcome_counts.values()),
+            color_continuous_scale="Purples",
+            title="What happened to your recommendations"
+        )
+        fig_outcomes.update_layout(
+            coloraxis_showscale=False,
+            margin=dict(t=40, b=0, l=0, r=0)
+        )
+        st.plotly_chart(fig_outcomes, use_container_width=True)
+
+        # Did the scoring system actually work?
+        pos = [
+            f["final_score"] for f in feedback
+            if f.get("outcome") in ("saved", "started", "rated_high")
+        ]
+        neg = [
+            f["final_score"] for f in feedback
+            if f.get("outcome") in ("rated_low", "ignored")
+        ]
+
+        if pos or neg:
+            st.markdown("### 🎯 Did the Scoring System Work?")
+            c1, c2 = st.columns(2)
+            c1.metric(
+                "Avg score — positive outcomes",
+                f"{sum(pos)/len(pos):.2f} / 10" if pos else "N/A"
+            )
+            c2.metric(
+                "Avg score — negative outcomes",
+                f"{sum(neg)/len(neg):.2f} / 10" if neg else "N/A"
+            )
+            st.caption(
+                "If the scoring system is working, positive outcomes should "
+                "have a higher average score than negative ones."
+            )
+
+    elif not read_books and not ratings:
+        st.info("Start reading and rating books to unlock your analytics! 📚")
+
+    st.divider()
     if st.button("⬅️ Back to Dashboard", use_container_width=True):
         st.session_state.page = "main"
         st.rerun()

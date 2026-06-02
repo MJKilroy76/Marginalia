@@ -1,7 +1,24 @@
 import json
 import os
+from datetime import datetime
 
 USERS_DIR = "users"
+
+# ── Default weights per phase ────────────────────────────────────
+DEFAULT_WEIGHTS_NEW = {
+    "genre_match":         0.35,
+    "age_appropriateness": 0.25,
+    "mood_match":          0.20,
+    "reading_pace_fit":    0.20,
+}
+
+DEFAULT_WEIGHTS_RETURNING = {
+    "genre_match":         0.25,
+    "age_appropriateness": 0.15,
+    "mood_match":          0.15,
+    "reading_pace_fit":    0.15,
+    "historical_ratings":  0.30,
+}
 
 
 def _ensure_users_dir():
@@ -30,18 +47,22 @@ def create_profile(username: str, password_hash: str) -> dict:
             "disliked_genres": [],
             "favorite_authors": []
         },
-        "reading_pace": None,          # "slow" | "moderate" | "fast"
-        "current_mood": None,          # "light" | "moderate" | "challenging"
+        "reading_pace": None,
+        "current_mood": None,
         "owned_books": [],
         "read_books": [],
         "reading_list": [],
-        "currently_reading": None,     # single book dict or None
-        "dnf_books": [],               # did not finish
-        "ratings": {},                 # {"Book Title": 1-5}
+        "currently_reading": None,
+        "dnf_books": [],
+        "ratings": {},
         "reading_goal": {
             "target": 0,
             "year": None
-        }
+        },
+
+        # ── Iteration 3 ──────────────────────────────────────────
+        "criterion_weights": None,          # None = use defaults
+        "recommendation_feedback": []       # list of feedback events
     }
     save_profile(username, profile)
     return profile
@@ -61,6 +82,25 @@ def load_profile(username: str) -> dict | None:
         return json.load(f)
 
 
+def _migrate_profile(profile: dict) -> dict:
+    """
+    Ensure older profiles have all Iteration 3 fields.
+    Called on every load so existing users don't break.
+    """
+    profile.setdefault("criterion_weights", None)
+    profile.setdefault("recommendation_feedback", [])
+    return profile
+
+
+def load_profile(username: str) -> dict | None:
+    path = _profile_path(username)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r") as f:
+        profile = json.load(f)
+    return _migrate_profile(profile)
+
+
 def update_taste_profile(username: str, taste_profile: dict):
     profile = load_profile(username)
     if profile:
@@ -68,8 +108,8 @@ def update_taste_profile(username: str, taste_profile: dict):
         save_profile(username, profile)
 
 
-def update_user_info(username: str, age: int = None, reading_pace: str = None, current_mood: str = None):
-    """Update optional user info fields."""
+def update_user_info(username: str, age: int = None,
+                     reading_pace: str = None, current_mood: str = None):
     profile = load_profile(username)
     if not profile:
         return
@@ -123,7 +163,6 @@ def mark_as_read(username: str, book_title: str):
         ]:
             profile["read_books"].append(book)
 
-    # Also clear currently_reading if it matches
     if (profile.get("currently_reading") and
             profile["currently_reading"]["title"].lower() == book_title.lower()):
         profile["currently_reading"] = None
@@ -131,7 +170,6 @@ def mark_as_read(username: str, book_title: str):
 
 
 def rate_book(username: str, book_title: str, rating: int):
-    """Rate a book 1-5 stars."""
     profile = load_profile(username)
     if not profile:
         return
@@ -142,7 +180,6 @@ def rate_book(username: str, book_title: str, rating: int):
 
 
 def set_currently_reading(username: str, book: dict | None):
-    """Set or clear the currently reading book."""
     profile = load_profile(username)
     if not profile:
         return
@@ -151,12 +188,9 @@ def set_currently_reading(username: str, book: dict | None):
 
 
 def mark_dnf(username: str, book_title: str):
-    """Mark a book as Did Not Finish."""
     profile = load_profile(username)
     if not profile:
         return
-
-    # Remove from reading list if present
     book = next(
         (b for b in profile["reading_list"]
          if b["title"].lower() == book_title.lower()),
@@ -171,7 +205,6 @@ def mark_dnf(username: str, book_title: str):
         if book_title.lower() not in dnf_titles:
             profile.setdefault("dnf_books", []).append(book)
 
-    # Also clear currently reading
     if (profile.get("currently_reading") and
             profile["currently_reading"]["title"].lower() == book_title.lower()):
         profile["currently_reading"] = None
@@ -179,7 +212,6 @@ def mark_dnf(username: str, book_title: str):
 
 
 def set_reading_goal(username: str, target: int, year: int):
-    """Set annual reading goal."""
     profile = load_profile(username)
     if not profile:
         return
@@ -199,3 +231,83 @@ def get_taste_profile(username: str) -> dict:
     if not profile:
         return {}
     return profile.get("taste_profile", {})
+
+
+# ── Iteration 3: Criterion Weights ───────────────────────────────
+
+def save_criterion_weights(username: str, weights: dict):
+    """Save user's custom criterion weights to their profile."""
+    profile = load_profile(username)
+    if not profile:
+        return
+
+    # Normalize so weights always sum to 1.0
+    total = sum(weights.values())
+    if total > 0:
+        weights = {k: round(v / total, 4) for k, v in weights.items()}
+    profile["criterion_weights"] = weights
+    save_profile(username, profile)
+
+
+def get_criterion_weights(username: str, has_history: bool) -> dict:
+    """
+    Return the user's saved weights, or defaults if none saved.
+    """
+    profile = load_profile(username)
+    if not profile:
+        return DEFAULT_WEIGHTS_RETURNING if has_history else DEFAULT_WEIGHTS_NEW
+    saved = profile.get("criterion_weights")
+    if saved:
+        return saved
+    return DEFAULT_WEIGHTS_RETURNING if has_history else DEFAULT_WEIGHTS_NEW
+
+
+def reset_criterion_weights(username: str):
+    """Reset weights back to defaults."""
+    profile = load_profile(username)
+    if not profile:
+        return
+    profile["criterion_weights"] = None
+    save_profile(username, profile)
+
+
+# ── Iteration 3: Recommendation Feedback ─────────────────────────
+
+def log_recommendation_feedback(
+    username: str,
+    book_title: str,
+    author: str,
+    outcome: str,            # "saved" | "started" | "rated_high" | "rated_low" | "ignored"
+    final_score: float,
+    score_breakdown: dict
+):
+    """
+    Log what happened to a recommended book.
+    outcome values:
+      - "saved"      → user added to reading list
+      - "started"    → user set as currently reading
+      - "rated_high" → user rated 4-5 stars
+      - "rated_low"  → user rated 1-2 stars
+      - "ignored"    → shown but never interacted with
+    """
+    profile = load_profile(username)
+    if not profile:
+        return
+    profile.setdefault("recommendation_feedback", [])
+    profile["recommendation_feedback"].append({
+        "book_title": book_title,
+        "author": author,
+        "outcome": outcome,
+        "final_score": final_score,
+        "score_breakdown": score_breakdown,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    save_profile(username, profile)
+
+
+def get_recommendation_feedback(username: str) -> list:
+    """Return all logged feedback events."""
+    profile = load_profile(username)
+    if not profile:
+        return []
+    return profile.get("recommendation_feedback", [])
